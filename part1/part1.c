@@ -81,13 +81,13 @@ void write_output(FILE *output, Account *accounts, int num_accounts) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <input_file> <output_file>\n", argv[0]);
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <input_file>\n", argv[0]);
         return 1;
     }
 
     FILE *input = fopen(argv[1], "r");
-    FILE *output = fopen(argv[2], "w");
+    FILE *output = fopen("out.txt", "w");
     if (!input || !output) {
         perror("Error opening file");
         return 1;

@@ -35,81 +35,107 @@ int count_token (char* buf, const char* delim)
 }
 
 
-command_line str_filler (char* buf, const char* delim)
-{
-    int i;
-    char *tkn, *saveptr1, *str1, *placeholder;
-    command_line cmd;
+// command_line str_filler (char* buf, const char* delim)
+// {
+//     int i;
+//     char *tkn, *saveptr1, *str1, *placeholder;
+//     command_line cmd;
 
-    // Count the number of tokens
-    cmd.num_token = count_token(buf, delim);
+//     // Count the number of tokens
+//     cmd.num_token = count_token(buf, delim);
     
-    // Allocate memory for token array, with space for NULL termination
-    cmd.command_list = (char **)malloc(sizeof(char *) * (cmd.num_token + 1));  
+//     // Allocate memory for token array, with space for NULL termination
+//     cmd.command_list = (char **)malloc(sizeof(char *) * (cmd.num_token + 1));  
     
-    // Tokenize and fill the command list
-    for (i = 0, placeholder = str1 = strdup(buf);; i++, str1 = NULL) {
-        tkn = strtok_r(str1, delim, &saveptr1);
-        if (tkn == NULL)
-            break;
-        cmd.command_list[i] = strdup(tkn);  // Duplicate token
+//     // Tokenize and fill the command list
+//     for (i = 0, placeholder = str1 = strdup(buf);; i++, str1 = NULL) {
+//         tkn = strtok_r(str1, delim, &saveptr1);
+//         if (tkn == NULL)
+//             break;
+//         cmd.command_list[i] = strdup(tkn);  // Duplicate token
+//     }
+
+//     free(placeholder);  // Free the buffer duplicated by strdup
+
+//     // Null-terminate the command list
+//     cmd.command_list[cmd.num_token] = NULL;
+
+//     return cmd;
+// }
+
+
+
+command_line str_filler(char* buf, const char* delim)
+{
+    command_line cmd = {0}; // Zero-initialize the structure
+    char *tkn, *saveptr1, *str1, *placeholder;
+
+    // Ensure buffer is not NULL
+    if (buf == NULL) {
+        return cmd;
     }
 
-    free(placeholder);  // Free the buffer duplicated by strdup
+    // Count the number of tokens
+    cmd.num_token = count_token(buf, delim) - 1; // Subtract 1 to match actual token count
+    
+    // Allocate memory for token array, with space for NULL termination
+    cmd.command_list = (char **)calloc(cmd.num_token + 1, sizeof(char *));  
+    if (cmd.command_list == NULL) {
+        // Handle allocation failure
+        return cmd;
+    }
+    
+    // Tokenize and fill the command list
+    int i = 0;
+    placeholder = str1 = strdup(buf);
+    
+    while ((tkn = strtok_r(str1, delim, &saveptr1)) != NULL) {
+        cmd.command_list[i] = strdup(tkn);
+        str1 = NULL;
+        i++;
+        
+        // Prevent buffer overflow
+        if (i >= cmd.num_token) break;
+    }
 
-    // Null-terminate the command list
-    cmd.command_list[cmd.num_token] = NULL;
+    free(placeholder);
+    cmd.command_list[i] = NULL; // Null-terminate
 
     return cmd;
 }
 
 
 
-// command_line str_filler (char* buf, const char* delim)
+void free_command_line(command_line* command)
+{
+    if (command == NULL) return;
+    
+    if (command->command_list != NULL) {
+        for (int i = 0; i < command->num_token; i++) {
+            if (command->command_list[i] != NULL) {
+                free(command->command_list[i]);
+            }
+        }
+        free(command->command_list);
+        command->command_list = NULL;
+    }
+    
+    command->num_token = 0;
+}
+
+
+
+
+
+// void free_command_line(command_line* command)
 // {
 // 	//TODO：
 // 	/*
-// 	*	#1.	create command_line variable to be filled and returned
-// 	*	#2.	count the number of tokens with count_token function, set num_token. 
-//     *           one can use strtok_r to remove the \n at the end of the line.
-// 	*	#3. malloc memory for token array inside command_line variable
-// 	*			based on the number of tokens.
-// 	*	#4.	use function strtok_r to find out the tokens 
-//     *   #5. malloc each index of the array with the length of tokens,
-// 	*			fill command_list array with tokens, and fill last spot with NULL.
-// 	*	#6. return the variable.
+// 	*	#1.	free the array base num_token
 // 	*/
 
-// 	int i;
-// 	char *tkn, *saveptr1, *str1, *placeholder;
-// 	command_line cmd;
-// 	cmd.num_token = count_token(buf, delim);
-	
-// 	cmd.command_list = (char **)malloc(sizeof(char *) * cmd.num_token);
-	
-// 	for (i = 0, placeholder = str1 = strdup(buf);; i++, str1 = NULL) {
-// 		tkn = strtok_r(str1, delim, &saveptr1);
-// 		if (tkn == NULL)
-// 		break;
-// 		cmd.command_list[i] = strdup(tkn);
+// 	for(int i = 0; i < command->num_token; i++){
+// 		free(command->command_list[i]);
 // 	}
-
-// 	free(placeholder);
-// 	cmd.command_list[cmd.num_token - 1] = NULL;
-// 	return cmd;
-
+// 	free(command->command_list);
 // }
-
-
-void free_command_line(command_line* command)
-{
-	//TODO：
-	/*
-	*	#1.	free the array base num_token
-	*/
-
-	for(int i = 0; i < command->num_token; i++){
-		free(command->command_list[i]);
-	}
-	free(command->command_list);
-}
