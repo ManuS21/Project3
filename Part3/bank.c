@@ -8,59 +8,35 @@
 #include "string_parser.h"
 
 #define NUM_WORKERS 10
-#define THRESHOLD 5000
+#define TRANSACTION_THRESHOLD 5000
 
 typedef struct {
-    Account *accounts;
+    account *accounts;
     int num_accounts;
     FILE *input;
     pthread_mutex_t *file_mutex;
     pthread_mutex_t *account_mutexes;
+    int *global_transaction_count;
+    pthread_mutex_t *global_mutex;
+    pthread_cond_t *update_cond;
+    pthread_barrier_t *start_barrier;
+    int *active_threads;
 } WorkerArgs;
 
-// Shared variables and synchronization tools
+pthread_mutex_t bank_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t bank_cond = PTHREAD_COND_INITIALIZER;
 pthread_barrier_t start_barrier;
-pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
-pthread_mutex_t cond_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t check_count_mutex = PTHREAD_MUTEX_INITIALIZER;
-int check_balance_count = 0;
-int processed_requests = 0;
-int pause_processing = 0;
-int pipe_fd[2];
+int global_transaction_count = 0;
+int active_threads = 0;
 
-// Function prototypes
 void* process_transactions_thread(void *arg);
-void* bank_thread_function(void *arg);
-void apply_rewards(Account *accounts, int num_accounts);
-void write_output(Account *accounts, int num_accounts);
-void log_interest_application(Account *accounts, int num_accounts);
-void log_to_pipe(const char *message);
-void auditor_process(int read_fd);
+void* bank_thread(void *arg);
 
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <input_file>\n", argv[0]);
         return 1;
     }
-
-    if (pipe(pipe_fd) == -1) {
-        perror("Pipe creation failed");
-        return 1;
-    }
-
-    pid_t pid = fork();
-    if (pid == -1) {
-        perror("Forking error");
-        return 1;
-    }
-
-    if (pid == 0) {
-        close(pipe_fd[1]);
-        auditor_process(pipe_fd[0]);
-        exit(0);
-    }
-
-    close(pipe_fd[0]);
 
     FILE *input = fopen(argv[1], "r");
     if (!input) {
@@ -71,7 +47,7 @@ int main(int argc, char *argv[]) {
     int num_accounts;
     fscanf(input, "%d\n", &num_accounts);
 
-    Account *accounts = malloc(sizeof(Account) * num_accounts);
+    account *accounts = malloc(sizeof(account) * num_accounts);
     pthread_mutex_t *account_mutexes = malloc(sizeof(pthread_mutex_t) * num_accounts);
     for (int i = 0; i < num_accounts; i++) {
         fscanf(input, "index %*d\n");
@@ -86,53 +62,58 @@ int main(int argc, char *argv[]) {
     pthread_mutex_t file_mutex;
     pthread_mutex_init(&file_mutex, NULL);
 
-    pthread_t workers[NUM_WORKERS];
-    pthread_t bank_thread;
-    WorkerArgs args = {accounts, num_accounts, input, &file_mutex, account_mutexes};
-
-    // Initialize barrier
     pthread_barrier_init(&start_barrier, NULL, NUM_WORKERS + 1);
+
+    pthread_t workers[NUM_WORKERS], bank;
+    WorkerArgs args = {
+        accounts,
+        num_accounts,
+        input,
+        &file_mutex,
+        account_mutexes,
+        &global_transaction_count,
+        &bank_mutex,
+        &bank_cond,
+        &start_barrier,
+        &active_threads
+    };
+
+    pthread_create(&bank, NULL, bank_thread, &args);
 
     for (int i = 0; i < NUM_WORKERS; i++) {
         pthread_create(&workers[i], NULL, process_transactions_thread, &args);
     }
 
-    pthread_create(&bank_thread, NULL, bank_thread_function, &args);
-
-    pthread_barrier_wait(&start_barrier); // Synchronize all threads
+    pthread_barrier_wait(&start_barrier); // Signal all threads to start processing
 
     for (int i = 0; i < NUM_WORKERS; i++) {
         pthread_join(workers[i], NULL);
     }
 
-    pthread_cancel(bank_thread);
-    pthread_join(bank_thread, NULL);
+    pthread_mutex_lock(&bank_mutex);
+    active_threads = 0; // Signal the bank thread for the final update
+    pthread_cond_signal(&bank_cond);
+    pthread_mutex_unlock(&bank_mutex);
 
-    apply_rewards(accounts, num_accounts);
-    write_output(accounts, num_accounts);
-    log_interest_application(accounts, num_accounts);
+    pthread_join(bank, NULL);
 
-    close(pipe_fd[1]);
-
+    fclose(input);
     pthread_barrier_destroy(&start_barrier);
-    pthread_cond_destroy(&cond);
-    pthread_mutex_destroy(&cond_mutex);
     pthread_mutex_destroy(&file_mutex);
     for (int i = 0; i < num_accounts; i++) {
         pthread_mutex_destroy(&account_mutexes[i]);
     }
     free(account_mutexes);
     free(accounts);
-    fclose(input);
     return 0;
 }
 
 void* process_transactions_thread(void *arg) {
     WorkerArgs *args = (WorkerArgs *)arg;
-
-    pthread_barrier_wait(&start_barrier); // Wait for all threads to start
-
     char buffer[256];
+    int local_transaction_count = 0;
+
+    pthread_barrier_wait(args->start_barrier);
 
     while (1) {
         pthread_mutex_lock(args->file_mutex);
@@ -149,98 +130,40 @@ void* process_transactions_thread(void *arg) {
         }
 
         char *type = cmd.command_list[0];
-
-        if (strcmp(type, "D") == 0 || strcmp(type, "W") == 0 || strcmp(type, "T") == 0) {
-            pthread_mutex_lock(&cond_mutex);
-            processed_requests++;
-            if (processed_requests >= THRESHOLD) {
-                pause_processing = 1;
-                pthread_cond_signal(&cond);
-                while (pause_processing) {
-                    pthread_cond_wait(&cond, &cond_mutex);
-                }
+        if (strcmp(type, "C") != 0) { // Exclude Check Balance
+            local_transaction_count++;
+            pthread_mutex_lock(args->global_mutex);
+            *(args->global_transaction_count) += 1;
+            if (*(args->global_transaction_count) >= TRANSACTION_THRESHOLD) {
+                pthread_cond_signal(args->update_cond);
+                pthread_cond_wait(&bank_cond, args->global_mutex);
             }
-            pthread_mutex_unlock(&cond_mutex);
+            pthread_mutex_unlock(args->global_mutex);
         }
-
-        // Existing transaction logic (e.g., deposit, withdraw, transfer)
-
+        // Handle transactions here...
         free_command_line(&cmd);
     }
+
+    pthread_mutex_lock(&bank_mutex);
+    *(args->active_threads) -= 1;
+    pthread_cond_signal(&bank_cond);
+    pthread_mutex_unlock(&bank_mutex);
 
     pthread_exit(NULL);
 }
 
-void* bank_thread_function(void *arg) {
+void* bank_thread(void *arg) {
     WorkerArgs *args = (WorkerArgs *)arg;
 
-    while (1) {
-        pthread_mutex_lock(&cond_mutex);
-        while (!pause_processing) {
-            pthread_cond_wait(&cond, &cond_mutex);
-        }
-
-        // Apply rewards and log balances
-        apply_rewards(args->accounts, args->num_accounts);
-        log_interest_application(args->accounts, args->num_accounts);
-        write_output(args->accounts, args->num_accounts);
-
-        processed_requests = 0;
-        pause_processing = 0;
-        pthread_cond_broadcast(&cond); // Notify worker threads
-        pthread_mutex_unlock(&cond_mutex);
-    }
-
-    return NULL;
-}
-
-void apply_rewards(Account *accounts, int num_accounts) {
-    for (int i = 0; i < num_accounts; i++) {
-        accounts[i].balance += accounts[i].transaction_tracter * accounts[i].reward_rate;
-    }
-}
-
-void log_interest_application(Account *accounts, int num_accounts) {
-    time_t now = time(NULL);
-    char log_entry[256];
-    
-    for (int i = 0; i < num_accounts; i++) {
-        snprintf(log_entry, sizeof(log_entry),
-                 "Applied interest to account %s. New Balance: $%.2f. Time of Update: %s",
-                 accounts[i].account_number, accounts[i].balance, ctime(&now));
-        log_to_pipe(log_entry);
-    }
-}
-
-void write_output(Account *accounts, int num_accounts) {
-    for (int i = 0; i < num_accounts; i++) {
-        char filename[64];
-        snprintf(filename, sizeof(filename), "act_%s.txt", accounts[i].account_number);
-        FILE *output = fopen(filename, "w");
-        if (output) {
-            fprintf(output, "Account: %s\nCurrent Balance: %.2f\n", accounts[i].account_number, accounts[i].balance);
-            fclose(output);
+    pthread_mutex_lock(&bank_mutex);
+    while (*(args->active_threads) > 0) {
+        pthread_cond_wait(&bank_cond, &bank_mutex);
+        if (*(args->global_transaction_count) >= TRANSACTION_THRESHOLD || *(args->active_threads) == 0) {
+            // Apply rewards logic
+            *(args->global_transaction_count) = 0; // Reset counter
+            pthread_cond_broadcast(args->update_cond); // Resume worker threads
         }
     }
-}
-
-void auditor_process(int read_fd) {
-    FILE *ledger = fopen("ledger.txt", "w");
-    if (!ledger) {
-        perror("Failed to open ledger.txt");
-        exit(1);
-    }
-
-    char buffer[256];
-    ssize_t bytes_read;
-    while ((bytes_read = read(read_fd, buffer, sizeof(buffer) - 1)) > 0) {
-        buffer[bytes_read] = '\0';
-        fprintf(ledger, "%s", buffer);
-    }
-
-    fclose(ledger);
-}
-
-void log_to_pipe(const char *message) {
-    write(pipe_fd[1], message, strlen(message));
+    pthread_mutex_unlock(&bank_mutex);
+    pthread_exit(NULL);
 }

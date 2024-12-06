@@ -11,5 +11,5 @@ double reward_rate;
 double transaction_tracter;
 char out_file[64];
 pthread_mutex_t ac_lock;
-}Account;
+} account;
 #endif /* ACCOUNT_H_ */
