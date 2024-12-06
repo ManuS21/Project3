@@ -11,7 +11,7 @@
 #define CHECK_BALANCE_THRESHOLD 500
 #define MAX_CHECK_LOGS 20
 #define REQUESTS_THRESHOLD 5000
-#define FILENAME_SIZE 16 // Increased size of filename buffer
+#define FILENAME_SIZE 20 // Increased size of filename buffer
 
 typedef struct {
     Account *accounts;
@@ -268,10 +268,13 @@ void write_output(Account *accounts, int num_accounts) {
         char filename[FILENAME_SIZE];
         snprintf(filename, FILENAME_SIZE, "act_%02d.txt", i);
         FILE *output = fopen(filename, "w");
-        fprintf(output, "Current Balance: %.2f\n", accounts[i].balance);
-        fclose(output);
+        if (output) {
+            fprintf(output, "Current Balance: %.2f\n", accounts[i].balance);
+            fclose(output);
+        }
     }
 }
+
 
 void log_interest_application(Account *accounts, int num_accounts) {
     time_t now = time(NULL);
